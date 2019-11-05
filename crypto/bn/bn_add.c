@@ -168,4 +168,3 @@ int BN_usub(BIGNUM *r, const BIGNUM *a, const BIGNUM *b)
 
     return 1;
 }
-

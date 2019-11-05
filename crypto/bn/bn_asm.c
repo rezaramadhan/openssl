@@ -9,8 +9,22 @@
 
 #include <assert.h>
 #include <openssl/crypto.h>
+#include <unistd.h>
 #include "internal/cryptlib.h"
 #include "bn_local.h"
+
+#include <pthread.h>
+
+#define NUM_THREADS 5
+
+/* thread function */
+void *thr_func(void *arg) {
+  int *data = (int *)arg;
+  // sleep(*data);
+  fprintf(stderr, "hello from thr_func, thread id: %d\n", *data);
+
+  pthread_exit(NULL);
+}
 
 #if defined(BN_LLONG) || defined(BN_UMULT_HIGH)
 
@@ -273,10 +287,29 @@ BN_ULONG bn_add_words(BN_ULONG *r, const BN_ULONG *a, const BN_ULONG *b,
                       int n)
 {
     BN_ULLONG ll = 0;
-
     assert(n >= 0);
     if (n <= 0)
         return (BN_ULONG)0;
+
+
+    sleep(1);
+    pthread_t thr[NUM_THREADS];
+    int i, rc;
+    /* create a thread_data_t argument array */
+    int thr_data[NUM_THREADS];
+
+    /* create threads */
+    for (i = 0; i < NUM_THREADS; ++i) {
+      thr_data[i] = i;
+      if ((rc = pthread_create(&thr[i], NULL, thr_func, &thr_data[i]))) {
+        fprintf(stderr, "error: pthread_create, rc: %d\n", rc);
+        return EXIT_FAILURE;
+      }
+    }
+    /* block until all threads complete */
+    for (i = 0; i < NUM_THREADS; ++i) {
+      pthread_join(thr[i], NULL);
+    }
 
 # ifndef OPENSSL_SMALL_FOOTPRINT
     while (n & ~3) {
@@ -300,8 +333,8 @@ BN_ULONG bn_add_words(BN_ULONG *r, const BN_ULONG *a, const BN_ULONG *b,
 # endif
     while (n) {
         ll += (BN_ULLONG) a[0] + b[0];
-        r[0] = (BN_ULONG)ll & BN_MASK2;
-        ll >>= BN_BITS2;
+        r[0] = (BN_ULONG)ll & BN_MASK2; // r[0] = ll div BASE
+        ll >>= BN_BITS2; // r[0] = ll mod BASE
         a++;
         b++;
         r++;
@@ -314,6 +347,26 @@ BN_ULONG bn_add_words(BN_ULONG *r, const BN_ULONG *a, const BN_ULONG *b,
                       int n)
 {
     BN_ULONG c, l, t;
+    sleep(5);
+
+    // pthread_t thr[NUM_THREADS];
+    // int i, rc;
+    // /* create a thread_data_t argument array */
+    // int thr_data[NUM_THREADS];
+    //
+    // /* create threads */
+    // for (i = 0; i < NUM_THREADS; ++i) {
+    //   thr_data[i] = i;
+    //   if ((rc = pthread_create(&thr[i], NULL, thr_func, &thr_data[i]))) {
+    //     fprintf(stderr, "error: pthread_create, rc: %d\n", rc);
+    //     return EXIT_FAILURE;
+    //   }
+    // }
+    // /* block until all threads complete */
+    // for (i = 0; i < NUM_THREADS; ++i) {
+    //   pthread_join(thr[i], NULL);
+    // }
+
 
     assert(n >= 0);
     if (n <= 0)
