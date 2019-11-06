@@ -1,4 +1,4 @@
-#define NUM_THREADS 5
+#define NUM_THREADS 4
 
 typedef struct _add_args_st {
     BN_ULONG *r;

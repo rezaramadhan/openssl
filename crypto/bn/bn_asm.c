@@ -273,6 +273,67 @@ BN_ULONG bn_div_words(BN_ULONG h, BN_ULONG l, BN_ULONG d)
 }
 #endif                          /* !defined(BN_LLONG) && defined(BN_DIV2W) */
 
+#ifdef BN_LLONG
+BN_ULONG bn_add_words(BN_ULONG *r, const BN_ULONG *a, const BN_ULONG *b,
+                      int n)
+{
+    BN_ULLONG ll = 0;
+    assert(n >= 0);
+    if (n <= 0)
+        return (BN_ULONG)0;
+
+
+# ifndef OPENSSL_SMALL_FOOTPRINT
+    while (n & ~3) {
+        ll += (BN_ULLONG) a[0] + b[0];
+        r[0] = (BN_ULONG)ll & BN_MASK2;
+        ll >>= BN_BITS2;
+        ll += (BN_ULLONG) a[1] + b[1];
+        r[1] = (BN_ULONG)ll & BN_MASK2;
+        ll >>= BN_BITS2;
+        ll += (BN_ULLONG) a[2] + b[2];
+        r[2] = (BN_ULONG)ll & BN_MASK2;
+        ll >>= BN_BITS2;
+        ll += (BN_ULLONG) a[3] + b[3];
+        r[3] = (BN_ULONG)ll & BN_MASK2;
+        ll >>= BN_BITS2;
+        a += 4;
+        b += 4;
+        r += 4;
+        n -= 4;
+    }
+# endif
+    while (n) {
+        ll += (BN_ULLONG) a[0] + b[0];
+        r[0] = (BN_ULONG)ll & BN_MASK2; // r[0] = ll div BASE
+        ll >>= BN_BITS2; // r[0] = ll mod BASE
+        a++;
+        b++;
+        r++;
+        n--;
+    }
+    return (BN_ULONG)ll;
+}
+#else                           /* !BN_LLONG */
+void bn_resolve_carry (BN_ULONG carry, add_args* arg) {
+    int i = 0;
+    BN_ULONG t;
+    while (carry && i < arg->n) {
+        // printf("rca, %ld\n", carry);
+        // printf("ri, %lx\n", arg->r[i]);
+        t = arg->r[i];
+        t = (t + carry) & BN_MASK2;
+        carry = (t < carry);
+        arg->r[i] = t;
+        i++;
+        // printf("rcb, %ld\n", carry);
+        // printf("ri, %lx\n", arg->r[i]);
+    }
+    if(i == arg->n) {
+        arg->carry += carry;
+    }
+}
+
 void *bn_add_words_thread(void *ptr) {
     BN_ULONG c, l, t;
     add_args *args = (add_args *) ptr;
@@ -332,63 +393,6 @@ void *bn_add_words_thread(void *ptr) {
     args->carry = c;
 }
 
-void bn_resolve_carry (BN_ULONG carry, add_args* arg) {
-    int i = 0, t;
-    while (carry && i < arg->n) {
-        // printf("rc, %d\n", carry);
-        t = arg->r[i];
-        t = (t + carry) & BN_MASK2;
-        carry = (t < carry);
-        arg->r[i] = t;
-        i++;
-    }
-    if(i < arg->n) {
-        arg->carry += carry;
-    }
-}
-
-#ifdef BN_LLONG
-BN_ULONG bn_add_words(BN_ULONG *r, const BN_ULONG *a, const BN_ULONG *b,
-                      int n)
-{
-    BN_ULLONG ll = 0;
-    assert(n >= 0);
-    if (n <= 0)
-        return (BN_ULONG)0;
-
-
-# ifndef OPENSSL_SMALL_FOOTPRINT
-    while (n & ~3) {
-        ll += (BN_ULLONG) a[0] + b[0];
-        r[0] = (BN_ULONG)ll & BN_MASK2;
-        ll >>= BN_BITS2;
-        ll += (BN_ULLONG) a[1] + b[1];
-        r[1] = (BN_ULONG)ll & BN_MASK2;
-        ll >>= BN_BITS2;
-        ll += (BN_ULLONG) a[2] + b[2];
-        r[2] = (BN_ULONG)ll & BN_MASK2;
-        ll >>= BN_BITS2;
-        ll += (BN_ULLONG) a[3] + b[3];
-        r[3] = (BN_ULONG)ll & BN_MASK2;
-        ll >>= BN_BITS2;
-        a += 4;
-        b += 4;
-        r += 4;
-        n -= 4;
-    }
-# endif
-    while (n) {
-        ll += (BN_ULLONG) a[0] + b[0];
-        r[0] = (BN_ULONG)ll & BN_MASK2; // r[0] = ll div BASE
-        ll >>= BN_BITS2; // r[0] = ll mod BASE
-        a++;
-        b++;
-        r++;
-        n--;
-    }
-    return (BN_ULONG)ll;
-}
-#else                           /* !BN_LLONG */
 BN_ULONG bn_add_words(BN_ULONG *r, const BN_ULONG *a, const BN_ULONG *b,
                       int n)
 {

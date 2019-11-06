@@ -19,6 +19,9 @@ setup("test_bn");
 my @files = (
     "bnexp.txt", "bnmod.txt", "bnmul.txt", "bnshift.txt", "bnsum.txt"
     );
+# my @files = (
+#    "bnsum.txt"
+#     );
 plan tests => 1 + scalar(@files);
 
 foreach my $f ( @files ) {
