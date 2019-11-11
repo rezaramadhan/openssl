@@ -9,6 +9,56 @@
 
 #include "internal/cryptlib.h"
 #include "bn_local.h"
+#include "bn_par.h"
+
+void *bn_add_sub_words_thread(void *ptr) {
+    BN_ULONG c;
+    add_sub_args *args = (add_sub_args *) ptr;
+
+    const BN_ULONG* ap = args->a;
+    const BN_ULONG* bp = args->b;
+    BN_ULONG* rp = args->r;
+    BN_ULONG min = args->n;
+
+    if (args->type == '+')
+        c = bn_add_words(rp, ap, bp, min);
+    else if (args->type == '-')
+        c = bn_sub_words(rp, ap, bp, min);
+
+    args->carry = c;
+    pthread_exit(NULL);
+}
+
+void bn_resolve_carry (BN_ULONG carry, add_sub_args* arg) {
+    int i = 0;
+    BN_ULONG t;
+    while (carry && i < arg->n) {
+        t = arg->r[i];
+        t = (t + carry) & BN_MASK2;
+        carry = (t < carry);
+        arg->r[i] = t;
+        i++;
+    }
+    if(i == arg->n) {
+        arg->carry += carry;
+    }
+}
+void bn_resolve_borrow (BN_ULONG borrow, add_sub_args* arg) {
+    int i = 0;
+    BN_ULONG t, t1, c = borrow;
+    while (c && i < arg->n) {
+        t = arg->r[i];
+        t1 = (t - c) & BN_MASK2;
+        arg->r[i] = t1;
+
+        //check overflow
+        c = (t1 > t);
+        i++;
+    }
+    if(i == arg->n) {
+        arg->carry += c;
+    }
+}
 
 /* signed add of b to a. */
 int BN_add(BIGNUM *r, const BIGNUM *a, const BIGNUM *b)
@@ -82,6 +132,7 @@ int BN_uadd(BIGNUM *r, const BIGNUM *a, const BIGNUM *b)
     bn_check_top(a);
     bn_check_top(b);
 
+    // a must be longer than b, if otherwise, swap
     if (a->top < b->top) {
         const BIGNUM *tmp;
 
@@ -102,7 +153,49 @@ int BN_uadd(BIGNUM *r, const BIGNUM *a, const BIGNUM *b)
     bp = b->d;
     rp = r->d;
 
-    carry = bn_add_words(rp, ap, bp, min);
+    // thread init
+    pthread_t thr[NUM_THREADS];
+    int rc;
+
+    /* create a thread_data_t argument array */
+    add_sub_args thr_data[NUM_THREADS];
+
+    /* create threads, divide array */
+    int new_n = min/NUM_THREADS;
+    int l_idx = 0;
+
+    for (int i = 0; i < NUM_THREADS; ++i) {
+        l_idx = new_n * i;
+        // printf("l_idx %d, h_idx %d\n", l_idx, l_idx + new_n);
+        thr_data[i].a = &ap[l_idx];
+        thr_data[i].b = &bp[l_idx];
+        thr_data[i].r = &rp[l_idx];
+        thr_data[i].type = '+';
+
+        if (i == (NUM_THREADS - 1))
+            thr_data[i].n = new_n + min % NUM_THREADS;
+        else
+            thr_data[i].n = new_n;
+
+        if ((rc = pthread_create(&thr[i], NULL, bn_add_sub_words_thread, &thr_data[i]))) {
+          fprintf(stderr, "error: pthread_create, rc: %d\n", rc);
+          return EXIT_FAILURE;
+        }
+    }
+    /* block until all threads complete */
+    for (int i = 0; i < NUM_THREADS; ++i) {
+        pthread_join(thr[i], NULL);
+        // printf("t%d %d\n", i, thr_data[i].carry);
+    }
+
+    /* Resolve Carry */
+    BN_ULONG tmp_carry;
+    for (int i = 0; i < NUM_THREADS - 1; ++i) {
+        tmp_carry = thr_data[i].carry;
+        bn_resolve_carry(tmp_carry, &thr_data[i+1]);
+    }
+    carry = thr_data[NUM_THREADS-1].carry;
+
     rp += min;
     ap += min;
 
@@ -147,7 +240,49 @@ int BN_usub(BIGNUM *r, const BIGNUM *a, const BIGNUM *b)
     bp = b->d;
     rp = r->d;
 
-    borrow = bn_sub_words(rp, ap, bp, min);
+    // create threads
+    pthread_t thr[NUM_THREADS];
+    int rc;
+
+    /* create a thread_data_t argument array */
+    add_sub_args thr_data[NUM_THREADS];
+
+    /* create threads, divide array */
+    int new_n = min/NUM_THREADS;
+    int l_idx = 0;
+
+    for (int i = 0; i < NUM_THREADS; ++i) {
+        l_idx = new_n * i;
+        // printf("l_idx %d, h_idx %d\n", l_idx, l_idx + new_n);
+        thr_data[i].a = &ap[l_idx];
+        thr_data[i].b = &bp[l_idx];
+        thr_data[i].r = &rp[l_idx];
+        thr_data[i].type = '-';
+
+        if (i == (NUM_THREADS - 1))
+            thr_data[i].n = new_n + min % NUM_THREADS;
+        else
+            thr_data[i].n = new_n;
+
+        if ((rc = pthread_create(&thr[i], NULL, bn_add_sub_words_thread, &thr_data[i]))) {
+          fprintf(stderr, "error: pthread_create, rc: %d\n", rc);
+          return EXIT_FAILURE;
+        }
+    }
+    /* block until all threads complete */
+    for (int i = 0; i < NUM_THREADS; ++i) {
+        pthread_join(thr[i], NULL);
+        // printf("t%d %d\n", i, thr_data[i].carry);
+    }
+
+    /* Resolve Carry */
+    BN_ULONG tmp_carry;
+    for (int i = 0; i < NUM_THREADS - 1; ++i) {
+        tmp_carry = thr_data[i].carry;
+        bn_resolve_borrow(tmp_carry, &thr_data[i+1]);
+    }
+    borrow = thr_data[NUM_THREADS-1].carry;
+
     ap += min;
     rp += min;
 

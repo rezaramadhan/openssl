@@ -12,7 +12,6 @@
 #include <unistd.h>
 #include "internal/cryptlib.h"
 #include "bn_local.h"
-#include "bn_par.h"
 
 #include <pthread.h>
 
@@ -315,133 +314,60 @@ BN_ULONG bn_add_words(BN_ULONG *r, const BN_ULONG *a, const BN_ULONG *b,
     return (BN_ULONG)ll;
 }
 #else                           /* !BN_LLONG */
-void bn_resolve_carry (BN_ULONG carry, add_args* arg) {
-    int i = 0;
-    BN_ULONG t;
-    while (carry && i < arg->n) {
-        // printf("rca, %ld\n", carry);
-        // printf("ri, %lx\n", arg->r[i]);
-        t = arg->r[i];
-        t = (t + carry) & BN_MASK2;
-        carry = (t < carry);
-        arg->r[i] = t;
-        i++;
-        // printf("rcb, %ld\n", carry);
-        // printf("ri, %lx\n", arg->r[i]);
-    }
-    if(i == arg->n) {
-        arg->carry += carry;
-    }
-}
-
-void *bn_add_words_thread(void *ptr) {
-    BN_ULONG c, l, t;
-    add_args *args = (add_args *) ptr;
-
-    const BN_ULONG* a = args->a;
-    const BN_ULONG* b = args->b;
-    BN_ULONG* r = args->r;
-    BN_ULONG n = args->n;
-
-    // printf("%d\n", n);
-    c = 0;
-
-    while (n & ~3) {
-        t = a[0];
-        t = (t + c) & BN_MASK2;
-        c = (t < c);
-        l = (t + b[0]) & BN_MASK2;
-        c += (l < t);
-        r[0] = l;
-        t = a[1];
-        t = (t + c) & BN_MASK2;
-        c = (t < c);
-        l = (t + b[1]) & BN_MASK2;
-        c += (l < t);
-        r[1] = l;
-        t = a[2];
-        t = (t + c) & BN_MASK2;
-        c = (t < c);
-        l = (t + b[2]) & BN_MASK2;
-        c += (l < t);
-        r[2] = l;
-        t = a[3];
-        t = (t + c) & BN_MASK2;
-        c = (t < c);
-        l = (t + b[3]) & BN_MASK2;
-        c += (l < t);
-        r[3] = l;
-        a += 4;
-        b += 4;
-        r += 4;
-        n -= 4;
-    }
-
-    while (n) {
-        // printf("%d\n", n);
-        t = a[0];
-        t = (t + c) & BN_MASK2;
-        c = (t < c); // check overflow, if overflow then carry = 1
-        l = (t + b[0]) & BN_MASK2;
-        c += (l < t);
-        r[0] = l;
-        a++;
-        b++;
-        r++;
-        n--;
-    }
-    args->carry = c;
-}
 
 BN_ULONG bn_add_words(BN_ULONG *r, const BN_ULONG *a, const BN_ULONG *b,
                       int n)
 {
-    BN_ULONG c;
-
+    BN_ULONG c, l, t;
+    assert(n >= 0);
     if (n <= 0)
-        return (BN_ULONG)0;
+       return (BN_ULONG)0;
 
-    // thread init
-    pthread_t thr[NUM_THREADS];
-    int rc;
-
-    /* create a thread_data_t argument array */
-    add_args thr_data[NUM_THREADS];
-
-    /* create threads, divide array */
-    int new_n = n/NUM_THREADS;
-    int l_idx = 0;
-    for (int i = 0; i < NUM_THREADS; ++i) {
-        l_idx = new_n * i;
-        // printf("l_idx %d, h_idx %d\n", l_idx, l_idx + new_n);
-        thr_data[i].a = &a[l_idx];
-        thr_data[i].b = &b[l_idx];
-        thr_data[i].r = &r[l_idx];
-
-        if (i == (NUM_THREADS - 1))
-            thr_data[i].n = new_n + n % NUM_THREADS;
-        else
-            thr_data[i].n = new_n;
-
-        if ((rc = pthread_create(&thr[i], NULL, bn_add_words_thread, &thr_data[i]))) {
-          fprintf(stderr, "error: pthread_create, rc: %d\n", rc);
-          return EXIT_FAILURE;
-        }
+    c = 0;
+# ifndef OPENSSL_SMALL_FOOTPRINT
+    while (n & ~3) {
+       t = a[0];
+       t = (t + c) & BN_MASK2;
+       c = (t < c);
+       l = (t + b[0]) & BN_MASK2;
+       c += (l < t);
+       r[0] = l;
+       t = a[1];
+       t = (t + c) & BN_MASK2;
+       c = (t < c);
+       l = (t + b[1]) & BN_MASK2;
+       c += (l < t);
+       r[1] = l;
+       t = a[2];
+       t = (t + c) & BN_MASK2;
+       c = (t < c);
+       l = (t + b[2]) & BN_MASK2;
+       c += (l < t);
+       r[2] = l;
+       t = a[3];
+       t = (t + c) & BN_MASK2;
+       c = (t < c);
+       l = (t + b[3]) & BN_MASK2;
+       c += (l < t);
+       r[3] = l;
+       a += 4;
+       b += 4;
+       r += 4;
+       n -= 4;
     }
-    /* block until all threads complete */
-    for (int i = 0; i < NUM_THREADS; ++i) {
-        pthread_join(thr[i], NULL);
-        // printf("t%d %d\n", i, thr_data[i].carry);
+# endif
+    while (n) {
+       t = a[0];
+       t = (t + c) & BN_MASK2;
+       c = (t < c);
+       l = (t + b[0]) & BN_MASK2;
+       c += (l < t);
+       r[0] = l;
+       a++;
+       b++;
+       r++;
+       n--;
     }
-
-    /* Resolve Carry */
-    BN_ULONG carry;
-    for (int i = 0; i < NUM_THREADS - 1; ++i) {
-        carry = thr_data[i].carry;
-        bn_resolve_carry(carry, &thr_data[i+1]);
-    }
-    c = thr_data[NUM_THREADS - 1].carry;
-
     return (BN_ULONG)c;
 }
 #endif                          /* !BN_LLONG */
