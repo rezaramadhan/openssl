@@ -103,6 +103,7 @@ void bn_sqr_words(BN_ULONG *r, const BN_ULONG *a, int n)
 BN_ULONG bn_mul_add_words(BN_ULONG *rp, const BN_ULONG *ap, int num,
                           BN_ULONG w)
 {
+    // printf("b\n");
     BN_ULONG c = 0;
     BN_ULONG bl, bh;
 
@@ -135,6 +136,7 @@ BN_ULONG bn_mul_add_words(BN_ULONG *rp, const BN_ULONG *ap, int num,
 
 BN_ULONG bn_mul_words(BN_ULONG *rp, const BN_ULONG *ap, int num, BN_ULONG w)
 {
+    // printf("bi\n");
     BN_ULONG carry = 0;
     BN_ULONG bl, bh;
 
