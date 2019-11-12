@@ -299,66 +299,85 @@ void bn_mul_recursive(BN_ULONG *r, BN_ULONG *a, BN_ULONG *b, int n2,
         pthread_t thr[3];
         recursive_args arg[3];
         int running_cnt = 0, rc;
-
+        BN_ULONG* tp[3];
         p = &(t[n2 * 2]);
         if (!zero) {
-            if (used_thr <= NUM_THREADS) {
+            if (used_thr < NUM_THREADS) {
                 used_thr++;
                 arg[0].r = &(t[n2]);
                 arg[0].a = t;
                 arg[0].b = &(t[n]);
                 arg[0].n2 = n;
-                arg[0].dna = arg[0].dnb = 0;
+                arg[0].dna = 0;
+                arg[0].dnb = 0;
                 arg[0].used_thr = used_thr;
-                arg[0].t = p;
-                if ((rc = pthread_create(&thr[0], NULL, bn_mul_recursive_thread, &arg[0]))) {
-                    fprintf(stderr, "error: pthread_create, rc: %d\n", rc);
+                tp[0] = (BN_ULONG*) calloc(n2+n, sizeof(BN_ULONG));
+                arg[0].t = tp[0];
+                if ((rc = pthread_create(&thr[0], NULL, bn_mul_recursive_thread, &(arg[0])))) {
+                    printf("error: pthread_create, rc: %d\n", rc);
                     exit(EXIT_FAILURE);
+                } else {
+                    printf("create0 success\n");
                 }
                 running_cnt++;
             } else
                 bn_mul_recursive(&(t[n2]), t, &(t[n]), n, 0, 0, p, used_thr);
         } else
             memset(&t[n2], 0, sizeof(*t) * n2);
-        if (used_thr <= NUM_THREADS) {
+        if (used_thr < NUM_THREADS) {
             used_thr++;
             arg[1].r = r;
             arg[1].a = a;
             arg[1].b = b;
             arg[1].n2 = n;
-            arg[1].dna = arg[0].dnb = 0;
+            arg[1].dna = arg[1].dnb = 0;
             arg[1].used_thr = used_thr;
-            arg[1].t = p;
-            if ((rc = pthread_create(&thr[0], NULL, bn_mul_recursive_thread, &arg[0]))) {
-                fprintf(stderr, "error: pthread_create, rc: %d\n", rc);
+            tp[1] = (BN_ULONG*) calloc(n2+n, sizeof(BN_ULONG));
+            arg[1].t = tp[1];
+            if ((rc = pthread_create(&thr[1], NULL, bn_mul_recursive_thread, &(arg[1])))) {
+                printf("error: pthread_create, rc: %d\n", rc);
                 exit(EXIT_FAILURE);
+            } else {
+                printf("create1 success\n");
             }
             running_cnt++;
         } else
             bn_mul_recursive(r, a, b, n, 0, 0, p, used_thr);
-        if (used_thr <= NUM_THREADS) {
+
+        if (used_thr < NUM_THREADS) {
             used_thr++;
             arg[2].r = &(r[n2]);
             arg[2].a = &(a[n]);
             arg[2].b = &(b[n]);
             arg[2].n2 = n;
             arg[2].dna = dna;
-            arg[0].dnb = dnb;
+            arg[2].dnb = dnb;
             arg[2].used_thr = used_thr;
-            arg[2].t = p;
-            if ((rc = pthread_create(&thr[0], NULL, bn_mul_recursive_thread, &arg[0]))) {
-                fprintf(stderr, "error: pthread_create, rc: %d\n", rc);
+            tp[2] = (BN_ULONG*) calloc(n2+n, sizeof(BN_ULONG));
+            arg[2].t = tp[2];
+            if ((rc = pthread_create(&thr[2], NULL, bn_mul_recursive_thread, &(arg[2])))) {
+                printf("error: pthread_create, rc: %d\n", rc);
                 exit(EXIT_FAILURE);
+            } else {
+                printf("create2 success\n");
             }
             running_cnt++;
         } else
             bn_mul_recursive(&(r[n2]), &(a[n]), &(b[n]), n, dna, dnb, p, used_thr);
 
-            /* block until all threads complete */
-       for (int i = 0; i < running_cnt; ++i) {
-           pthread_join(thr[i], NULL);
-           // printf("t%d %d\n", i, thr_data[i].carry);
-       }
+        /* block until all threads complete */
+        printf("running_cnt %d\n", running_cnt);
+        for (int i = 0; i < running_cnt; i++) {
+            printf("i %d\n", i);
+            if ((rc = pthread_join(thr[i], NULL))) {
+                printf("error: pthread_create, rc: %d\n", rc);
+                exit(EXIT_FAILURE);
+            } else {
+                printf("join%d success\n", i);
+            }
+            // printf("t%d %d\n", i, thr_data[i].carry);
+            free(tp[i]);
+        }
     }
 
     /*-
@@ -675,7 +694,7 @@ int bn_mul_fixed_top(BIGNUM *r, const BIGNUM *a, const BIGNUM *b, BN_CTX *ctx)
             if (t == NULL)
                 goto err;
             if (al > j || bl > j) {
-                printf("mul-part-rec\n");
+                // printf("mul-part-rec\n");
                 if (bn_wexpand(t, k * 4) == NULL)
                     goto err;
                 if (bn_wexpand(rr, k * 4) == NULL)
@@ -688,7 +707,7 @@ int bn_mul_fixed_top(BIGNUM *r, const BIGNUM *a, const BIGNUM *b, BN_CTX *ctx)
                     goto err;
                 if (bn_wexpand(rr, k * 2) == NULL)
                     goto err;
-                bn_mul_recursive(rr->d, a->d, b->d, j, al - j, bl - j, t->d, 0);
+                bn_mul_recursive(rr->d, a->d, b->d, j, al - j, bl - j, t->d, 1);
             }
             rr->top = top;
             goto end;
