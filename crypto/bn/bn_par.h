@@ -2,7 +2,8 @@
 
 typedef struct _recursive_args_st {
     BN_ULONG *r;
-    BN_ULONG *a; BN_ULONG *b;
+    BN_ULONG *a;
+    BN_ULONG *b;
     int n2;
     int dna;
     int dnb;
