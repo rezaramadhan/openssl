@@ -192,6 +192,16 @@ void *bn_mul_part_recursive_thread(void *ptr) {
     pthread_exit(NULL);
 }
 
+void start_recursive_thread(pthread_t *thr, recursive_args *arg) {
+    int rc;
+    if ((rc = pthread_create(thr, NULL, bn_mul_recursive_thread, arg))) {
+        fprintf(stderr, "error: pthread_create, rc: %d\n", rc);
+        exit(EXIT_FAILURE);
+    } else {
+        // printf("create0 success\n");
+    }
+}
+
 /*-
  * r is 2*n2 words in size,
  * a and b are both n2 words in size.
@@ -304,21 +314,9 @@ void bn_mul_recursive(BN_ULONG *r, BN_ULONG *a, BN_ULONG *b, int n2,
         if (!zero) {
             if (used_thr < NUM_THREADS) {
                 used_thr++;
-                arg[0].r = &(t[n2]);
-                arg[0].a = t;
-                arg[0].b = &(t[n]);
-                arg[0].n2 = n;
-                arg[0].dna = 0;
-                arg[0].dnb = 0;
-                arg[0].used_thr = used_thr;
                 tp[0] = (BN_ULONG*) calloc(n2+n, sizeof(BN_ULONG));
-                arg[0].t = tp[0];
-                if ((rc = pthread_create(&thr[0], NULL, bn_mul_recursive_thread, &(arg[0])))) {
-                    printf("error: pthread_create, rc: %d\n", rc);
-                    exit(EXIT_FAILURE);
-                } else {
-                    printf("create0 success\n");
-                }
+                set_recursive_arg(arg[0], &(t[n2]), t, &(t[n]), n, 0, 0, tp[0], used_thr);
+                start_recursive_thread(&(thr[0]), &(arg[0]));
                 running_cnt++;
             } else
                 bn_mul_recursive(&(t[n2]), t, &(t[n]), n, 0, 0, p, used_thr);
@@ -326,54 +324,31 @@ void bn_mul_recursive(BN_ULONG *r, BN_ULONG *a, BN_ULONG *b, int n2,
             memset(&t[n2], 0, sizeof(*t) * n2);
         if (used_thr < NUM_THREADS) {
             used_thr++;
-            arg[1].r = r;
-            arg[1].a = a;
-            arg[1].b = b;
-            arg[1].n2 = n;
-            arg[1].dna = arg[1].dnb = 0;
-            arg[1].used_thr = used_thr;
             tp[1] = (BN_ULONG*) calloc(n2+n, sizeof(BN_ULONG));
-            arg[1].t = tp[1];
-            if ((rc = pthread_create(&thr[1], NULL, bn_mul_recursive_thread, &(arg[1])))) {
-                printf("error: pthread_create, rc: %d\n", rc);
-                exit(EXIT_FAILURE);
-            } else {
-                printf("create1 success\n");
-            }
+            set_recursive_arg(arg[1], r, a, b, n, 0, 0, tp[1], used_thr);
+            start_recursive_thread(&(thr[1]), &(arg[1]));
             running_cnt++;
         } else
             bn_mul_recursive(r, a, b, n, 0, 0, p, used_thr);
 
         if (used_thr < NUM_THREADS) {
             used_thr++;
-            arg[2].r = &(r[n2]);
-            arg[2].a = &(a[n]);
-            arg[2].b = &(b[n]);
-            arg[2].n2 = n;
-            arg[2].dna = dna;
-            arg[2].dnb = dnb;
-            arg[2].used_thr = used_thr;
             tp[2] = (BN_ULONG*) calloc(n2+n, sizeof(BN_ULONG));
-            arg[2].t = tp[2];
-            if ((rc = pthread_create(&thr[2], NULL, bn_mul_recursive_thread, &(arg[2])))) {
-                printf("error: pthread_create, rc: %d\n", rc);
-                exit(EXIT_FAILURE);
-            } else {
-                printf("create2 success\n");
-            }
+            set_recursive_arg(arg[2], &(r[n2]), &(a[n]), &(b[n]), n, dna, dnb, tp[2], used_thr);
+            start_recursive_thread(&(thr[2]), &(arg[2]));
             running_cnt++;
         } else
             bn_mul_recursive(&(r[n2]), &(a[n]), &(b[n]), n, dna, dnb, p, used_thr);
 
         /* block until all threads complete */
-        printf("running_cnt %d\n", running_cnt);
+        // printf("running_cnt %d\n", running_cnt);
         for (int i = 0; i < running_cnt; i++) {
-            printf("i %d\n", i);
+            // printf("i %d\n", i);
             if ((rc = pthread_join(thr[i], NULL))) {
-                printf("error: pthread_create, rc: %d\n", rc);
+                fprintf(stderr, "error: pthread_join, rc: %d\n", rc);
                 exit(EXIT_FAILURE);
             } else {
-                printf("join%d success\n", i);
+                // printf("join%d success\n", i);
             }
             // printf("t%d %d\n", i, thr_data[i].carry);
             free(tp[i]);
