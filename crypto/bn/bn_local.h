@@ -640,7 +640,7 @@ int bn_cmp_part_words(const BN_ULONG *a, const BN_ULONG *b, int cl, int dl);
 void bn_mul_recursive(BN_ULONG *r, BN_ULONG *a, BN_ULONG *b, int n2,
                       int dna, int dnb, BN_ULONG *t, int *used_thr);
 void bn_mul_part_recursive(BN_ULONG *r, BN_ULONG *a, BN_ULONG *b,
-                           int n, int tna, int tnb, BN_ULONG *t);
+                           int n, int tna, int tnb, BN_ULONG *t, int *used_thr);
 void bn_sqr_recursive(BN_ULONG *r, const BN_ULONG *a, int n2, BN_ULONG *t);
 void bn_mul_low_normal(BN_ULONG *r, BN_ULONG *a, BN_ULONG *b, int n);
 void bn_mul_low_recursive(BN_ULONG *r, BN_ULONG *a, BN_ULONG *b, int n2,

@@ -190,20 +190,26 @@ void *bn_mul_part_recursive_thread(void *ptr) {
     int tna = args->dna;
     int tnb = args->dnb;
     BN_ULONG *t = args->t;
-    // int used_thr = args->used_thr;
+    int *used_thr = args->used_thr;
 
-    bn_mul_part_recursive(r, a, b, n, tna, tnb, t);
+    bn_mul_part_recursive(r, a, b, n, tna, tnb, t, used_thr);
     pthread_exit(NULL);
 }
 
-void start_recursive_thread(pthread_t *thr, recursive_args *arg) {
+void start_mul_recursive_thread(pthread_t *thr, recursive_args *arg, BN_ULONG *r, BN_ULONG *a, BN_ULONG *b, int n2, int dna, int dnb, BN_ULONG *tmp_thr, int *used_thr) {
     int rc;
+
+    pthread_mutex_lock(&thr_count_lock);
+    (*used_thr)++;
+    pthread_mutex_unlock(&thr_count_lock);
+    set_recursive_arg((*arg), r, a, b, n2, dna, dnb, tmp_thr, used_thr);
+
     // printf("thread_created %d\n", *(arg->used_thr));
     if ((rc = pthread_create(thr, NULL, bn_mul_recursive_thread, arg))) {
         fprintf(stderr, "error: pthread_create, rc: %d\n", rc);
         exit(EXIT_FAILURE);
     } else {
-        // printf("create0 success\n");
+        // printf("create%d success\n", *used_thr);
     }
 }
 
@@ -318,35 +324,22 @@ void bn_mul_recursive(BN_ULONG *r, BN_ULONG *a, BN_ULONG *b, int n2,
         p = &(t[n2 * 2]);
         if (!zero) {
             if (*used_thr < NUM_THREADS) {
-                pthread_mutex_lock(&thr_count_lock);
-                (*used_thr)++;
-                pthread_mutex_unlock(&thr_count_lock);
-                tp[0] = (BN_ULONG*) calloc(n2*2, sizeof(BN_ULONG));
-                set_recursive_arg(arg[0], &(t[n2]), t, &(t[n]), n, 0, 0, tp[0], used_thr);
-                start_recursive_thread(&(thr[0]), &(arg[0]));
+                tp[0] = (BN_ULONG *) calloc(n2*2, sizeof(BN_ULONG));
+                start_mul_recursive_thread(&(thr[0]), &(arg[0]), &(t[n2]), t, &(t[n]), n, 0, 0, tp[0], used_thr);
                 running_cnt++;
             } else
                 bn_mul_recursive(&(t[n2]), t, &(t[n]), n, 0, 0, p, used_thr);
         } else
             memset(&t[n2], 0, sizeof(*t) * n2);
         if (*used_thr < NUM_THREADS) {
-            pthread_mutex_lock(&thr_count_lock);
-            (*used_thr)++;
-            pthread_mutex_unlock(&thr_count_lock);
-            tp[1] = (BN_ULONG*) calloc(n2*2, sizeof(BN_ULONG));
-            set_recursive_arg(arg[1], r, a, b, n, 0, 0, tp[1], used_thr);
-            start_recursive_thread(&(thr[1]), &(arg[1]));
+            tp[1] = (BN_ULONG *) calloc(n2*2, sizeof(BN_ULONG));
+            start_mul_recursive_thread(&(thr[1]), &(arg[1]), r, a, b, n, 0, 0, tp[1], used_thr);
             running_cnt++;
         } else
             bn_mul_recursive(r, a, b, n, 0, 0, p, used_thr);
-
         if (*used_thr < NUM_THREADS) {
-            pthread_mutex_lock(&thr_count_lock);
-            (*used_thr)++;
-            pthread_mutex_unlock(&thr_count_lock);
-            tp[2] = (BN_ULONG*) calloc(n2*2, sizeof(BN_ULONG));
-            set_recursive_arg(arg[2], &(r[n2]), &(a[n]), &(b[n]), n, dna, dnb, tp[2], used_thr);
-            start_recursive_thread(&(thr[2]), &(arg[2]));
+            tp[2] = (BN_ULONG *) calloc(n2*2, sizeof(BN_ULONG));
+            start_mul_recursive_thread(&(thr[2]), &(arg[2]), &(r[n2]), &(a[n]), &(b[n]), n, dna, dnb, tp[2], used_thr);
             running_cnt++;
         } else
             bn_mul_recursive(&(r[n2]), &(a[n]), &(b[n]), n, dna, dnb, p, used_thr);
@@ -416,7 +409,7 @@ void bn_mul_recursive(BN_ULONG *r, BN_ULONG *a, BN_ULONG *b, int n2,
  */
 /* tnX may not be negative but less than n */
 void bn_mul_part_recursive(BN_ULONG *r, BN_ULONG *a, BN_ULONG *b, int n,
-                           int tna, int tnb, BN_ULONG *t)
+                           int tna, int tnb, BN_ULONG *t, int *used_thr)
 {
     int i, j, n2 = n * 2;
     int c1, c2, neg;
@@ -474,10 +467,9 @@ void bn_mul_part_recursive(BN_ULONG *r, BN_ULONG *a, BN_ULONG *b, int n,
         bn_mul_normal(&(r[n2]), &(a[n]), tna, &(b[n]), tnb);
         memset(&r[n2 + tna + tnb], 0, sizeof(*r) * (n2 - tna - tnb));
     } else {
-        int u = 99;
         p = &(t[n2 * 2]);
-        bn_mul_recursive(&(t[n2]), t, &(t[n]), n, 0, 0, p, &u);
-        bn_mul_recursive(r, a, b, n, 0, 0, p, &u);
+        bn_mul_recursive(&(t[n2]), t, &(t[n]), n, 0, 0, p, used_thr);
+        bn_mul_recursive(r, a, b, n, 0, 0, p, used_thr);
         i = n / 2;
         /*
          * If there is only a bottom half to the number, just do it
@@ -488,11 +480,11 @@ void bn_mul_part_recursive(BN_ULONG *r, BN_ULONG *a, BN_ULONG *b, int n,
             j = tnb - i;
         if (j == 0) {
             bn_mul_recursive(&(r[n2]), &(a[n]), &(b[n]),
-                             i, tna - i, tnb - i, p, &u);
+                             i, tna - i, tnb - i, p, used_thr);
             memset(&r[n2 + i * 2], 0, sizeof(*r) * (n2 - i * 2));
         } else if (j > 0) {     /* eg, n == 16, i == 8 and tn == 11 */
             bn_mul_part_recursive(&(r[n2]), &(a[n]), &(b[n]),
-                                  i, tna - i, tnb - i, p);
+                                  i, tna - i, tnb - i, p, used_thr);
             memset(&(r[n2 + tna + tnb]), 0,
                    sizeof(BN_ULONG) * (n2 - tna - tnb));
         } else {                /* (j < 0) eg, n == 16, i == 8 and tn == 5 */
@@ -511,12 +503,12 @@ void bn_mul_part_recursive(BN_ULONG *r, BN_ULONG *a, BN_ULONG *b, int n,
                     if (i < tna || i < tnb) {
                         bn_mul_part_recursive(&(r[n2]),
                                               &(a[n]), &(b[n]),
-                                              i, tna - i, tnb - i, p);
+                                              i, tna - i, tnb - i, p, used_thr);
                         break;
                     } else if (i == tna || i == tnb) {
                         bn_mul_recursive(&(r[n2]),
                                          &(a[n]), &(b[n]),
-                                         i, tna - i, tnb - i, p, &u);
+                                         i, tna - i, tnb - i, p, used_thr);
                         break;
                     }
                 }
@@ -686,8 +678,10 @@ int bn_mul_fixed_top(BIGNUM *r, const BIGNUM *a, const BIGNUM *b, BN_CTX *ctx)
                     goto err;
                 if (bn_wexpand(rr, k * 4) == NULL)
                     goto err;
+
+                int used_thread = 1;
                 bn_mul_part_recursive(rr->d, a->d, b->d,
-                                      j, al - j, bl - j, t->d);
+                                      j, al - j, bl - j, t->d, &used_thread);
             } else {            /* al <= j && bl <= j */
                 // al or bl is exacly the power of two
                 if (bn_wexpand(t, k * 2) == NULL)
