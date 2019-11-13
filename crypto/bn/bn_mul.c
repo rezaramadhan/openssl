@@ -162,6 +162,10 @@ BN_ULONG bn_sub_part_words(BN_ULONG *r,
  * Computer Programming, Vol. 2)
  */
 
+
+pthread_mutex_t thr_count_lock;
+
+
 void *bn_mul_recursive_thread(void *ptr) {
     recursive_args *args = (recursive_args *) ptr;
     BN_ULONG *r = args->r;
@@ -314,7 +318,9 @@ void bn_mul_recursive(BN_ULONG *r, BN_ULONG *a, BN_ULONG *b, int n2,
         p = &(t[n2 * 2]);
         if (!zero) {
             if (*used_thr < NUM_THREADS) {
+                pthread_mutex_lock(&thr_count_lock);
                 (*used_thr)++;
+                pthread_mutex_unlock(&thr_count_lock);
                 tp[0] = (BN_ULONG*) calloc(n2*2, sizeof(BN_ULONG));
                 set_recursive_arg(arg[0], &(t[n2]), t, &(t[n]), n, 0, 0, tp[0], used_thr);
                 start_recursive_thread(&(thr[0]), &(arg[0]));
@@ -324,7 +330,9 @@ void bn_mul_recursive(BN_ULONG *r, BN_ULONG *a, BN_ULONG *b, int n2,
         } else
             memset(&t[n2], 0, sizeof(*t) * n2);
         if (*used_thr < NUM_THREADS) {
+            pthread_mutex_lock(&thr_count_lock);
             (*used_thr)++;
+            pthread_mutex_unlock(&thr_count_lock);
             tp[1] = (BN_ULONG*) calloc(n2*2, sizeof(BN_ULONG));
             set_recursive_arg(arg[1], r, a, b, n, 0, 0, tp[1], used_thr);
             start_recursive_thread(&(thr[1]), &(arg[1]));
@@ -333,7 +341,9 @@ void bn_mul_recursive(BN_ULONG *r, BN_ULONG *a, BN_ULONG *b, int n2,
             bn_mul_recursive(r, a, b, n, 0, 0, p, used_thr);
 
         if (*used_thr < NUM_THREADS) {
+            pthread_mutex_lock(&thr_count_lock);
             (*used_thr)++;
+            pthread_mutex_unlock(&thr_count_lock);
             tp[2] = (BN_ULONG*) calloc(n2*2, sizeof(BN_ULONG));
             set_recursive_arg(arg[2], &(r[n2]), &(a[n]), &(b[n]), n, dna, dnb, tp[2], used_thr);
             start_recursive_thread(&(thr[2]), &(arg[2]));
