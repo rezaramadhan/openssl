@@ -1,4 +1,4 @@
-#define NUM_THREADS 16
+#define NUM_THREADS 2
 
 typedef struct _recursive_args_st {
     BN_ULONG *r;
