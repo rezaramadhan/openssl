@@ -12,6 +12,7 @@
 #include <unistd.h>
 #include "internal/cryptlib.h"
 #include "bn_local.h"
+#include "bn_par.h"
 
 #include <pthread.h>
 
@@ -21,6 +22,7 @@
 BN_ULONG bn_mul_add_words(BN_ULONG *rp, const BN_ULONG *ap, int num,
                           BN_ULONG w)
 {
+    //printf("a\n");
     BN_ULONG c1 = 0;
 
     assert(num >= 0);
@@ -50,6 +52,7 @@ BN_ULONG bn_mul_add_words(BN_ULONG *rp, const BN_ULONG *ap, int num,
 
 BN_ULONG bn_mul_words(BN_ULONG *rp, const BN_ULONG *ap, int num, BN_ULONG w)
 {
+    //printf("ai\n");
     BN_ULONG c1 = 0;
 
     assert(num >= 0);
@@ -104,7 +107,113 @@ void bn_sqr_words(BN_ULONG *r, const BN_ULONG *a, int n)
 #else                           /* !(defined(BN_LLONG) ||
                                  * defined(BN_UMULT_HIGH)) */
 
-BN_ULONG bn_mul_add_words(BN_ULONG *rp, const BN_ULONG *ap, int num,
+void bn_resolve_carry_mul(BN_ULONG carry, mul_normal_args* arg) {
+    int i = 0;
+    BN_ULONG t;
+    while (carry && i < arg->n) {
+        t = arg->r[i];
+        t = (t + carry) & BN_MASK2;
+        carry = (t < carry);
+        arg->r[i] = t;
+        i++;
+    }
+    if(i == arg->n) {
+        arg->carry += carry;
+    }
+}
+
+void *bn_mul_add_words_thread(void *ptr)
+{
+    mul_normal_args *args = (mul_normal_args *) ptr;
+
+    const BN_ULONG* ap = args->a;
+    const BN_ULONG w = args->w;
+    BN_ULONG* rp = args->r;
+    int num = args->n;
+
+    // printf("num %d\n", num);
+    BN_ULONG c = 0;
+    BN_ULONG bl, bh;
+
+    bl = LBITS(w);
+    bh = HBITS(w);
+# ifndef OPENSSL_SMALL_FOOTPRINT
+    while (num & ~3) {
+        mul_add(rp[0], ap[0], bl, bh, c);
+        mul_add(rp[1], ap[1], bl, bh, c);
+        mul_add(rp[2], ap[2], bl, bh, c);
+        mul_add(rp[3], ap[3], bl, bh, c);
+        ap += 4;
+        rp += 4;
+        num -= 4;
+    }
+# endif
+    while (num) {
+        mul_add(rp[0], ap[0], bl, bh, c);
+        ap++;
+        rp++;
+        num--;
+    }
+    args->carry = c;
+
+    pthread_exit(NULL);
+}
+
+BN_ULONG bn_mul_add_words_par(BN_ULONG *rp, const BN_ULONG *ap, int num,
+                          BN_ULONG w)
+{
+    //printf("b\n");
+    BN_ULONG carry = 0;
+
+    assert(num >= 0);
+    if (num <= 0)
+        return (BN_ULONG)0;
+
+    pthread_t thr[NUM_THREADS];
+    int rc;
+
+    /* create a thread_data_t argument array */
+    mul_normal_args thr_data[NUM_THREADS];
+
+    /* create threads, divide array */
+    int new_n = num/NUM_THREADS;
+    int l_idx = 0;
+    // printf("%lu\n", w);
+    for (int i = 0; i < NUM_THREADS; ++i) {
+        l_idx = new_n * i;
+        thr_data[i].a = &ap[l_idx];
+        thr_data[i].w = w;
+        thr_data[i].r = &rp[l_idx];
+
+        if (i == (NUM_THREADS - 1))
+            thr_data[i].n = new_n + num % NUM_THREADS;
+        else
+            thr_data[i].n = new_n;
+        // printf("tot %d n %d\n", num, thr_data[i].n);
+        if ((rc = pthread_create(&thr[i], NULL, bn_mul_add_words_thread, &thr_data[i]))) {
+          fprintf(stderr, "error: pthread_create, rc: %d\n", rc);
+          exit(EXIT_FAILURE);
+        }
+    }
+    // printf("\n");
+    /* block until all threads complete */
+    for (int i = 0; i < NUM_THREADS; ++i) {
+        pthread_join(thr[i], NULL);
+        // printf("t%d %d\n", i, thr_data[i].carry);
+    }
+
+    /* Resolve Carry */
+    BN_ULONG tmp_carry;
+    for (int i = 0; i < NUM_THREADS - 1; ++i) {
+        tmp_carry = thr_data[i].carry;
+        bn_resolve_carry_mul(tmp_carry, &thr_data[i+1]);
+    }
+    carry = thr_data[NUM_THREADS-1].carry;
+
+    return carry;
+}
+
+BN_ULONG bn_mul_add_words_original(BN_ULONG *rp, const BN_ULONG *ap, int num,
                           BN_ULONG w)
 {
     BN_ULONG c = 0;
@@ -137,7 +246,104 @@ BN_ULONG bn_mul_add_words(BN_ULONG *rp, const BN_ULONG *ap, int num,
     return c;
 }
 
-BN_ULONG bn_mul_words(BN_ULONG *rp, const BN_ULONG *ap, int num, BN_ULONG w)
+BN_ULONG bn_mul_add_words(BN_ULONG *rp, const BN_ULONG *ap, int num,
+                          BN_ULONG w)
+{
+    if (num > BN_MUL_ADD_NUM_THRESHOLD) {
+        return bn_mul_add_words_par(rp, ap, num, w);
+    } else {
+        return bn_mul_add_words_original(rp, ap, num, w);
+    }
+}
+
+void *bn_mul_words_thread(void *ptr) {
+    mul_normal_args *args = (mul_normal_args *) ptr;
+
+    const BN_ULONG* ap = args->a;
+    const BN_ULONG w = args->w;
+    BN_ULONG* rp = args->r;
+    int num = args->n;
+
+    BN_ULONG bl, bh, carry = 0;
+
+    bl = LBITS(w);
+    bh = HBITS(w);
+    // printf("w %lx, bh %lx, bl %lx\n", w, bh, bl);
+
+# ifndef OPENSSL_SMALL_FOOTPRINT
+    while (num & ~3) {
+        mul(rp[0], ap[0], bl, bh, carry);
+        mul(rp[1], ap[1], bl, bh, carry);
+        mul(rp[2], ap[2], bl, bh, carry);
+        mul(rp[3], ap[3], bl, bh, carry);
+        ap += 4;
+        rp += 4;
+        num -= 4;
+    }
+# endif
+    while (num) {
+        mul(rp[0], ap[0], bl, bh, carry);
+        ap++;
+        rp++;
+        num--;
+    }
+
+    args->carry = carry;
+    pthread_exit(NULL);
+}
+
+BN_ULONG bn_mul_words_par(BN_ULONG *rp, const BN_ULONG *ap, int num, BN_ULONG w)
+{
+    BN_ULONG carry = 0;
+
+    assert(num >= 0);
+    if (num <= 0)
+        return (BN_ULONG)0;
+
+    pthread_t thr[NUM_THREADS];
+    int rc;
+
+    /* create a thread_data_t argument array */
+    mul_normal_args thr_data[NUM_THREADS];
+
+    /* create threads, divide array */
+    int new_n = num/NUM_THREADS;
+    int l_idx = 0;
+
+    for (int i = 0; i < NUM_THREADS; ++i) {
+        l_idx = new_n * i;
+        thr_data[i].a = &(ap[l_idx]);
+        thr_data[i].w = w;
+        thr_data[i].r = &(rp[l_idx]);
+
+        if (i == (NUM_THREADS - 1))
+            thr_data[i].n = new_n + num % NUM_THREADS;
+        else
+            thr_data[i].n = new_n;
+        // printf("tot %d l_idx %d, h_idx %d\n", num, l_idx, l_idx + thr_data[i].n - 1);
+        if ((rc = pthread_create(&thr[i], NULL, bn_mul_words_thread, &thr_data[i]))) {
+          fprintf(stderr, "error: pthread_create, rc: %d\n", rc);
+          exit(EXIT_FAILURE);
+        }
+    }
+    // printf("\n");
+    /* block until all threads complete */
+    for (int i = 0; i < NUM_THREADS; ++i) {
+        pthread_join(thr[i], NULL);
+        // printf("t%d %lx\n", i, thr_data[i].carry);
+    }
+
+    /* Resolve Carry */
+    BN_ULONG tmp_carry;
+    for (int i = 0; i < NUM_THREADS - 1; ++i) {
+        tmp_carry = thr_data[i].carry;
+        bn_resolve_carry_mul(tmp_carry, &thr_data[i+1]);
+    }
+    carry = thr_data[NUM_THREADS-1].carry;
+
+    return carry;
+}
+BN_ULONG bn_mul_words_original(BN_ULONG *rp, const BN_ULONG *ap, int num, BN_ULONG w)
 {
     BN_ULONG carry = 0;
     BN_ULONG bl, bh;
@@ -167,6 +373,15 @@ BN_ULONG bn_mul_words(BN_ULONG *rp, const BN_ULONG *ap, int num, BN_ULONG w)
         num--;
     }
     return carry;
+}
+
+BN_ULONG bn_mul_words(BN_ULONG *rp, const BN_ULONG *ap, int num, BN_ULONG w)
+{
+    if (num > BN_MUL_NUM_THRESHOLD) {
+        return bn_mul_words_par(rp, ap, num, w);
+    } else {
+        return bn_mul_words_original(rp, ap, num, w);
+    }
 }
 
 void bn_sqr_words(BN_ULONG *r, const BN_ULONG *a, int n)
