@@ -216,6 +216,7 @@ BN_ULONG bn_mul_add_words_par(BN_ULONG *rp, const BN_ULONG *ap, int num,
 BN_ULONG bn_mul_add_words_original(BN_ULONG *rp, const BN_ULONG *ap, int num,
                           BN_ULONG w)
 {
+    // printf("b\n");
     BN_ULONG c = 0;
     BN_ULONG bl, bh;
 
@@ -345,6 +346,7 @@ BN_ULONG bn_mul_words_par(BN_ULONG *rp, const BN_ULONG *ap, int num, BN_ULONG w)
 }
 BN_ULONG bn_mul_words_original(BN_ULONG *rp, const BN_ULONG *ap, int num, BN_ULONG w)
 {
+    // printf("bi\n");
     BN_ULONG carry = 0;
     BN_ULONG bl, bh;
 
