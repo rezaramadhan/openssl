@@ -177,7 +177,6 @@ BN_ULONG bn_mul_add_words_par(BN_ULONG *rp, const BN_ULONG *ap, int num,
     // printf("%lu\n", w);
     for (int i = 0; i < NUM_THREADS; ++i) {
         l_idx = new_n * i;
-        // printf("l_idx %d, h_idx %d\n", l_idx, l_idx + new_n);
         thr_data[i].a = &ap[l_idx];
         thr_data[i].w = w;
         thr_data[i].r = &rp[l_idx];
@@ -246,7 +245,7 @@ BN_ULONG bn_mul_add_words_original(BN_ULONG *rp, const BN_ULONG *ap, int num,
 BN_ULONG bn_mul_add_words(BN_ULONG *rp, const BN_ULONG *ap, int num,
                           BN_ULONG w)
 {
-    if (num > BN_MUL_NUM_THRESHOLD) {
+    if (num > BN_MUL_ADD_NUM_THRESHOLD) {
         return bn_mul_add_words_par(rp, ap, num, w);
     } else {
         return bn_mul_add_words_original(rp, ap, num, w);
@@ -280,7 +279,6 @@ void *bn_mul_words_thread(void *ptr) {
 # endif
     while (num) {
         mul(rp[0], ap[0], bl, bh, carry);
-        mul(rp[0], ap[0], bl, bh, carry);
         ap++;
         rp++;
         num--;
@@ -290,7 +288,7 @@ void *bn_mul_words_thread(void *ptr) {
     pthread_exit(NULL);
 }
 
-BN_ULONG bn_mul_words(BN_ULONG *rp, const BN_ULONG *ap, int num, BN_ULONG w)
+BN_ULONG bn_mul_words_par(BN_ULONG *rp, const BN_ULONG *ap, int num, BN_ULONG w)
 {
     BN_ULONG carry = 0;
 
@@ -310,7 +308,6 @@ BN_ULONG bn_mul_words(BN_ULONG *rp, const BN_ULONG *ap, int num, BN_ULONG w)
 
     for (int i = 0; i < NUM_THREADS; ++i) {
         l_idx = new_n * i;
-        // printf("l_idx %d, h_idx %d\n", l_idx, l_idx + new_n);
         thr_data[i].a = &(ap[l_idx]);
         thr_data[i].w = w;
         thr_data[i].r = &(rp[l_idx]);
@@ -319,59 +316,69 @@ BN_ULONG bn_mul_words(BN_ULONG *rp, const BN_ULONG *ap, int num, BN_ULONG w)
             thr_data[i].n = new_n + num % NUM_THREADS;
         else
             thr_data[i].n = new_n;
-        // printf("tot %d n %d\n", num, thr_data[i].n);
+        // printf("tot %d l_idx %d, h_idx %d\n", num, l_idx, l_idx + thr_data[i].n - 1);
         if ((rc = pthread_create(&thr[i], NULL, bn_mul_words_thread, &thr_data[i]))) {
           fprintf(stderr, "error: pthread_create, rc: %d\n", rc);
           exit(EXIT_FAILURE);
         }
     }
+    // printf("\n");
     /* block until all threads complete */
     for (int i = 0; i < NUM_THREADS; ++i) {
         pthread_join(thr[i], NULL);
-        // printf("t%d %d\n", i, thr_data[i].carry);
+        // printf("t%d %lx\n", i, thr_data[i].carry);
     }
 
     /* Resolve Carry */
     BN_ULONG tmp_carry;
     for (int i = 0; i < NUM_THREADS - 1; ++i) {
         tmp_carry = thr_data[i].carry;
-        // bn_resolve_carry_mul(tmp_carry, &thr_data[i+1]);
+        bn_resolve_carry_mul(tmp_carry, &thr_data[i+1]);
     }
     carry = thr_data[NUM_THREADS-1].carry;
 
     return carry;
 }
-// BN_ULONG bn_mul_words(BN_ULONG *rp, const BN_ULONG *ap, int num, BN_ULONG w)
-// {
-//     BN_ULONG carry = 0;
-//     BN_ULONG bl, bh;
-//
-//     assert(num >= 0);
-//     if (num <= 0)
-//         return (BN_ULONG)0;
-//
-//     bl = LBITS(w);
-//     bh = HBITS(w);
-//
-// # ifndef OPENSSL_SMALL_FOOTPRINT
-//     while (num & ~3) {
-//         mul(rp[0], ap[0], bl, bh, carry);
-//         mul(rp[1], ap[1], bl, bh, carry);
-//         mul(rp[2], ap[2], bl, bh, carry);
-//         mul(rp[3], ap[3], bl, bh, carry);
-//         ap += 4;
-//         rp += 4;
-//         num -= 4;
-//     }
-// # endif
-//     while (num) {
-//         mul(rp[0], ap[0], bl, bh, carry);
-//         ap++;
-//         rp++;
-//         num--;
-//     }
-//     return carry;
-// }
+BN_ULONG bn_mul_words_original(BN_ULONG *rp, const BN_ULONG *ap, int num, BN_ULONG w)
+{
+    BN_ULONG carry = 0;
+    BN_ULONG bl, bh;
+
+    assert(num >= 0);
+    if (num <= 0)
+        return (BN_ULONG)0;
+
+    bl = LBITS(w);
+    bh = HBITS(w);
+
+# ifndef OPENSSL_SMALL_FOOTPRINT
+    while (num & ~3) {
+        mul(rp[0], ap[0], bl, bh, carry);
+        mul(rp[1], ap[1], bl, bh, carry);
+        mul(rp[2], ap[2], bl, bh, carry);
+        mul(rp[3], ap[3], bl, bh, carry);
+        ap += 4;
+        rp += 4;
+        num -= 4;
+    }
+# endif
+    while (num) {
+        mul(rp[0], ap[0], bl, bh, carry);
+        ap++;
+        rp++;
+        num--;
+    }
+    return carry;
+}
+
+BN_ULONG bn_mul_words(BN_ULONG *rp, const BN_ULONG *ap, int num, BN_ULONG w)
+{
+    if (num > BN_MUL_NUM_THRESHOLD) {
+        return bn_mul_words_par(rp, ap, num, w);
+    } else {
+        return bn_mul_words_original(rp, ap, num, w);
+    }
+}
 
 void bn_sqr_words(BN_ULONG *r, const BN_ULONG *a, int n)
 {
