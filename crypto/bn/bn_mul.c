@@ -10,6 +10,7 @@
 #include <assert.h>
 #include "internal/cryptlib.h"
 #include "bn_local.h"
+#include "bn_par.h"
 
 #if defined(OPENSSL_NO_ASM) || !defined(OPENSSL_BN_ASM_PART_WORDS)
 /*
@@ -563,6 +564,7 @@ int bn_mul_fixed_top(BIGNUM *r, const BIGNUM *a, const BIGNUM *b, BN_CTX *ctx)
 #ifdef BN_RECURSION
     if ((al >= BN_MULL_SIZE_NORMAL) && (bl >= BN_MULL_SIZE_NORMAL)) {
         if (i >= -1 && i <= 1) {
+            // printf("recursion\n");
             /*
              * Find out the power of two lower or equal to the longest of the
              * two numbers
@@ -602,6 +604,7 @@ int bn_mul_fixed_top(BIGNUM *r, const BIGNUM *a, const BIGNUM *b, BN_CTX *ctx)
     if (bn_wexpand(rr, top) == NULL)
         goto err;
     rr->top = top;
+    // printf("normal\n");
     bn_mul_normal(rr->d, a->d, al, b->d, bl);
 
 #if defined(BN_MUL_COMBA) || defined(BN_RECURSION)
@@ -619,10 +622,54 @@ int bn_mul_fixed_top(BIGNUM *r, const BIGNUM *a, const BIGNUM *b, BN_CTX *ctx)
     return ret;
 }
 
+void *bn_mul_normal_thread(void *ptr) {
+    mul_normal_args *args = (mul_normal_args *) ptr;
+
+    const BN_ULONG* a = args->a;
+    const BN_ULONG* b = args->b;
+    BN_ULONG* r = args->r;
+    int na = args->na;
+    int nb = args->nb;
+    args->nr = na + nb;
+    BN_ULONG* rr;
+
+
+    rr = &(r[na]);
+    if (nb <= 0) {
+        (void)bn_mul_words(r, a, na, 0);
+        pthread_exit(NULL);
+    } else
+        rr[0] = bn_mul_words(r, a, na, b[0]);
+
+    for (;;) {
+        if (--nb <= 0)
+            pthread_exit(NULL);
+        rr[1] = bn_mul_add_words(&(r[1]), a, na, b[1]);
+        if (--nb <= 0)
+            pthread_exit(NULL);
+        rr[2] = bn_mul_add_words(&(r[2]), a, na, b[2]);
+        if (--nb <= 0)
+            pthread_exit(NULL);
+        rr[3] = bn_mul_add_words(&(r[3]), a, na, b[3]);
+        if (--nb <= 0)
+            pthread_exit(NULL);
+        rr[4] = bn_mul_add_words(&(r[4]), a, na, b[4]);
+        rr += 4;
+        r += 4;
+        b += 4;
+    }
+
+    pthread_exit(NULL);
+}
+
+void print_arr(BN_ULONG *a, int n) {
+    for (int i = 0; i < n; i++) {
+        printf("%lx\n", a[i]);
+    }
+}
+
 void bn_mul_normal(BN_ULONG *r, BN_ULONG *a, int na, BN_ULONG *b, int nb)
 {
-    BN_ULONG *rr;
-
     if (na < nb) {
         int itmp;
         BN_ULONG *ltmp;
@@ -633,32 +680,59 @@ void bn_mul_normal(BN_ULONG *r, BN_ULONG *a, int na, BN_ULONG *b, int nb)
         ltmp = a;
         a = b;
         b = ltmp;
-
     }
-    rr = &(r[na]);
-    if (nb <= 0) {
-        (void)bn_mul_words(r, a, na, 0);
-        return;
-    } else
-        rr[0] = bn_mul_words(r, a, na, b[0]);
 
-    for (;;) {
-        if (--nb <= 0)
-            return;
-        rr[1] = bn_mul_add_words(&(r[1]), a, na, b[1]);
-        if (--nb <= 0)
-            return;
-        rr[2] = bn_mul_add_words(&(r[2]), a, na, b[2]);
-        if (--nb <= 0)
-            return;
-        rr[3] = bn_mul_add_words(&(r[3]), a, na, b[3]);
-        if (--nb <= 0)
-            return;
-        rr[4] = bn_mul_add_words(&(r[4]), a, na, b[4]);
-        rr += 4;
-        r += 4;
-        b += 4;
+    memset(r, 0, (na+nb)*sizeof(BN_ULONG));
+
+    pthread_t thr[NUM_THREADS];
+    int rc;
+
+
+    /* create a thread_data_t argument array */
+    mul_normal_args thr_data[NUM_THREADS];
+    // BN_ULONG* r_tmp[NUM_THREADS];
+
+    /* create threads, divide array */
+    int new_nb = nb/NUM_THREADS;
+    int l_idx = 0;
+
+    for (int i = 0; i < NUM_THREADS; ++i) {
+        if (i == (NUM_THREADS - 1))
+            thr_data[i].nb = new_nb + nb % NUM_THREADS;
+        else
+            thr_data[i].nb = new_nb;
+
+        l_idx = new_nb * i;
+        thr_data[i].a = a;
+        thr_data[i].b = &(b[l_idx]);
+        thr_data[i].na = na;
+        thr_data[i].r = (BN_ULONG *) malloc((thr_data[i].nb + na)* sizeof(BN_ULONG));
+        if (thr_data[i].r == NULL) {
+            fprintf(stderr, "error: malloc error \n");
+            exit(EXIT_FAILURE);
+        }
+
+        if ((rc = pthread_create(&thr[i], NULL, bn_mul_normal_thread, &thr_data[i]))) {
+          fprintf(stderr, "error: pthread_create, rc: %d\n", rc);
+          exit(EXIT_FAILURE);
+        }
     }
+
+    /* block until all threads complete */
+    BN_ULONG carry;
+    for (int i = 0; i < NUM_THREADS; ++i) {
+        pthread_join(thr[i], NULL);
+
+        int nr = thr_data[i].nr;
+        carry = bn_add_words(r, r, thr_data[i].r, nr);
+
+        if (i != NUM_THREADS - 1) {
+            r[nr] = carry;
+        }
+        r += thr_data[i].nb;
+        free(thr_data[i].r);
+    }
+
 }
 
 void bn_mul_low_normal(BN_ULONG *r, BN_ULONG *a, BN_ULONG *b, int n)
