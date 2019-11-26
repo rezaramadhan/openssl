@@ -448,7 +448,6 @@ int BN_mod_exp_mont(BIGNUM *rr, const BIGNUM *a, const BIGNUM *p,
 {
 
     // printf("exp_mont\n");
-    BN_CTX_start(ctx);
     pthread_t thr[NUM_THREADS];
     int rc, n, i, j, window;
     int bits, ret = 0;
