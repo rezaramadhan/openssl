@@ -12,6 +12,7 @@
 #include "bn_local.h"
 
 #include <stdlib.h>
+#include "bn_par.h"
 #ifdef _WIN32
 # include <malloc.h>
 # ifndef alloca
@@ -89,6 +90,7 @@ int BN_exp(BIGNUM *r, const BIGNUM *a, const BIGNUM *p, BN_CTX *ctx)
 int BN_mod_exp(BIGNUM *r, const BIGNUM *a, const BIGNUM *p, const BIGNUM *m,
                BN_CTX *ctx)
 {
+
     int ret;
 
     bn_check_top(a);
@@ -293,83 +295,31 @@ int BN_mod_exp_recp(BIGNUM *r, const BIGNUM *a, const BIGNUM *p,
     return ret;
 }
 
-int BN_mod_exp_mont(BIGNUM *rr, const BIGNUM *a, const BIGNUM *p,
-                    const BIGNUM *m, BN_CTX *ctx, BN_MONT_CTX *in_mont)
+int bn_mod_exp_mont_seq(BIGNUM *rr, const BIGNUM *a, const BIGNUM *p,
+                     const BIGNUM *m, BIGNUM **val, BN_CTX *ctx, BN_MONT_CTX *mont)
 {
-    int i, j, bits, ret = 0, wstart, wend, window, wvalue;
-    int start = 1;
-    BIGNUM *d, *r;
-    const BIGNUM *aa;
-    /* Table of variables obtained from 'ctx' */
-    BIGNUM *val[TABLE_SIZE];
-    BN_MONT_CTX *mont = NULL;
+    int i, j, bits, ret = 0, wstart, wend, window, wvalue, start;
+    BIGNUM *r;
 
-    if (BN_get_flags(p, BN_FLG_CONSTTIME) != 0
-            || BN_get_flags(a, BN_FLG_CONSTTIME) != 0
-            || BN_get_flags(m, BN_FLG_CONSTTIME) != 0) {
-        return BN_mod_exp_mont_consttime(rr, a, p, m, ctx, in_mont);
-    }
 
-    bn_check_top(a);
-    bn_check_top(p);
-    bn_check_top(m);
+    r = BN_CTX_get(ctx);
 
-    if (!BN_is_odd(m)) {
-        BNerr(BN_F_BN_MOD_EXP_MONT, BN_R_CALLED_WITH_EVEN_MODULUS);
-        return 0;
-    }
     bits = BN_num_bits(p);
     if (bits == 0) {
         /* x**0 mod 1, or x**0 mod -1 is still zero. */
         if (BN_abs_is_word(m, 1)) {
-            ret = 1;
             BN_zero(rr);
+            if (!bn_to_mont_fixed_top(rr, rr, mont, ctx))
+                goto err;
         } else {
-            ret = BN_one(rr);
+            if (!bn_to_mont_fixed_top(rr, BN_value_one(), mont, ctx))
+                goto err;
         }
+        ret = 1;
         return ret;
     }
 
-    BN_CTX_start(ctx);
-    d = BN_CTX_get(ctx);
-    r = BN_CTX_get(ctx);
-    val[0] = BN_CTX_get(ctx);
-    if (val[0] == NULL)
-        goto err;
-
-    /*
-     * If this is not done, things will break in the montgomery part
-     */
-
-    if (in_mont != NULL)
-        mont = in_mont;
-    else {
-        if ((mont = BN_MONT_CTX_new()) == NULL)
-            goto err;
-        if (!BN_MONT_CTX_set(mont, m, ctx))
-            goto err;
-    }
-
-    if (a->neg || BN_ucmp(a, m) >= 0) {
-        if (!BN_nnmod(val[0], a, m, ctx))
-            goto err;
-        aa = val[0];
-    } else
-        aa = a;
-    if (!bn_to_mont_fixed_top(val[0], aa, mont, ctx))
-        goto err;               /* 1 */
-
     window = BN_window_bits_for_exponent_size(bits);
-    if (window > 1) {
-        if (!bn_mul_mont_fixed_top(d, val[0], val[0], mont, ctx))
-            goto err;           /* 2 */
-        j = 1 << (window - 1);
-        for (i = 1; i < j; i++) {
-            if (((val[i] = BN_CTX_get(ctx)) == NULL) ||
-                !bn_mul_mont_fixed_top(val[i], val[i - 1], d, mont, ctx))
-                goto err;
-        }
-    }
 
     start = 1;                  /* This is used to avoid multiplication etc
                                  * when there is only the value '1' in the
@@ -442,22 +392,185 @@ int BN_mod_exp_mont(BIGNUM *rr, const BIGNUM *a, const BIGNUM *p,
         if (wstart < 0)
             break;
     }
+    // printf("rte %s\n", BN_bn2hex(r));
+    BN_copy(rr, r);
+
+    ret = 1;
+ err:
+    BN_CTX_end(ctx);
+    bn_check_top(rr);
+    return ret;
+}
+
+
+void* bn_mod_exp_mont_thread(void *ptr) {
+    exp_args *args = (exp_args *) ptr;
+
+    BIGNUM *r = args->r;
+    const BIGNUM *a = args->a;
+    BIGNUM *p = args->p;
+    const BIGNUM *m = args->m;
+    BN_MONT_CTX *mont = args->mont_ctx;
+    BN_ULONG ri = args->ri;
+    BIGNUM **val = args->val;
+    BN_CTX *ctx = BN_CTX_new();
+
+    // set p
+    BN_CTX_start(ctx);
+
+    // printf("%d pta %s\n", ri, BN_bn2hex(p));
+    BN_lshift(p, p, ri);
+    // printf("ptb %s\n", BN_bn2hex(p));
+
+    //exp
+    bn_mod_exp_mont_seq(r, a, p, m, val, ctx, mont);
+    // printf("rt %s\n", BN_bn2hex(r));
+
+    BN_CTX_free(ctx);
+
+    pthread_exit(NULL);
+}
+
+void bn_slice(BIGNUM* to, const BIGNUM *from, int l_idx, int n) {
+    BN_ULONG* fp = from->d;
+    fp += l_idx;
+
+    // print_arr(fbin, fl);
+    // printf("%lx\n", *fp);
+
+    int nc_idx = n*(sizeof(BN_ULONG)/sizeof(unsigned char));
+    // printf("%d %d\n", l_idx, nc_idx);
+    BN_lebin2bn((unsigned char*)fp, nc_idx, to);
+}
+
+int BN_mod_exp_mont(BIGNUM *rr, const BIGNUM *a, const BIGNUM *p,
+                    const BIGNUM *m, BN_CTX *ctx, BN_MONT_CTX *in_mont)
+{
+
+    // printf("exp_mont\n");
+    BN_CTX_start(ctx);
+    pthread_t thr[NUM_THREADS];
+    int rc, n, i, j, window;
+    int bits, ret = 0;
+    BIGNUM *d, *r;
+    const BIGNUM *aa;
+    /* Table of variables obtained from 'ctx' */
+    BIGNUM *val[TABLE_SIZE];
+    BN_MONT_CTX *mont = NULL;
+
+    if (BN_get_flags(p, BN_FLG_CONSTTIME) != 0
+            || BN_get_flags(a, BN_FLG_CONSTTIME) != 0
+            || BN_get_flags(m, BN_FLG_CONSTTIME) != 0) {
+        return BN_mod_exp_mont_consttime(rr, a, p, m, ctx, in_mont);
+    }
+
+    bn_check_top(a);
+    bn_check_top(p);
+    bn_check_top(m);
+
+    if (!BN_is_odd(m)) {
+        BNerr(BN_F_BN_MOD_EXP_MONT, BN_R_CALLED_WITH_EVEN_MODULUS);
+        return 0;
+    }
+    bits = BN_num_bits(p);
+    if (bits == 0) {
+        /* x**0 mod 1, or x**0 mod -1 is still zero. */
+        if (BN_abs_is_word(m, 1)) {
+            ret = 1;
+            BN_zero(rr);
+        } else {
+            ret = BN_one(rr);
+        }
+        return ret;
+    }
+
+    BN_CTX_start(ctx);
+    d = BN_CTX_get(ctx);
+    r = BN_CTX_get(ctx);
+    val[0] = BN_CTX_get(ctx);
+    if (val[0] == NULL)
+        goto err;
+
     /*
-     * Done with zero-padded intermediate BIGNUMs. Final BN_from_montgomery
-     * removes padding [if any] and makes return value suitable for public
-     * API consumer.
+     * If this is not done, things will break in the montgomery part
      */
-#if defined(SPARC_T4_MONT)
-    if (OPENSSL_sparcv9cap_P[0] & (SPARCV9_VIS3 | SPARCV9_PREFER_FPU)) {
-        j = mont->N.top;        /* borrow j */
-        val[0]->d[0] = 1;       /* borrow val[0] */
-        for (i = 1; i < j; i++)
-            val[0]->d[i] = 0;
-        val[0]->top = j;
-        if (!BN_mod_mul_montgomery(rr, r, val[0], mont, ctx))
+
+    if (in_mont != NULL)
+        mont = in_mont;
+    else {
+        if ((mont = BN_MONT_CTX_new()) == NULL)
             goto err;
+        if (!BN_MONT_CTX_set(mont, m, ctx))
+            goto err;
+    }
+
+    if (a->neg || BN_ucmp(a, m) >= 0) {
+        if (!BN_nnmod(val[0], a, m, ctx))
+            goto err;
+        aa = val[0];
     } else
-#endif
+        aa = a;
+
+    // change aa to montgomery form
+    if (!bn_to_mont_fixed_top(val[0], aa, mont, ctx))
+        goto err;               /* 1 */
+
+    //precompute val
+    window = BN_window_bits_for_exponent_size(bits);
+    if (window > 1) {
+        if (!bn_mul_mont_fixed_top(d, val[0], val[0], mont, ctx))
+            goto err;           /* 2 */
+        j = 1 << (window - 1);
+        for (i = 1; i < j; i++) {
+            if (((val[i] = BN_CTX_get(ctx)) == NULL) ||
+                !bn_mul_mont_fixed_top(val[i], val[i - 1], d, mont, ctx))
+                goto err;
+        }
+    }
+
+
+    n = p->top;
+    /* create a thread_data_t argument array */
+    exp_args thr_data[NUM_THREADS];
+
+    /* create threads, divide array */
+    int new_n = n/NUM_THREADS;
+    int l_idx = 0;
+    int ni, ri;
+    BIGNUM *rt, *pt;
+    for (int i = 0; i < NUM_THREADS; ++i) {
+        l_idx = new_n * i;
+        // set ri
+        if (i == (NUM_THREADS - 1))
+            ni = new_n + n % NUM_THREADS;
+        else
+            ni = new_n;
+        ri = l_idx*sizeof(BN_ULONG)*8;
+        rt = BN_CTX_get(ctx);
+        pt = BN_CTX_get(ctx);
+
+        // split p to smaller
+        bn_slice(pt, p, l_idx, ni);
+        // printf("pi \n"); print_bn(thr_data[i].p);
+
+        set_exp_arg(thr_data[i], rt, a, pt, m, mont, &(val[0]), ri);
+
+        if ((rc = pthread_create(&thr[i], NULL, bn_mod_exp_mont_thread, &(thr_data[i])))) {
+          fprintf(stderr, "error: pthread_create, rc: %d\n", rc);
+          return EXIT_FAILURE;
+        }
+    }
+    if (!bn_to_mont_fixed_top(r, BN_value_one(), mont, ctx))
+        goto err;
+    /* block until all threads complete */
+    for (int i = 0; i < NUM_THREADS; ++i) {
+        pthread_join(thr[i], NULL);
+
+        // printf("t%d %s\n", i, BN_bn2hex(thr_data[i].r));
+        if (!bn_mul_mont_fixed_top(r, r, thr_data[i].r, mont, ctx))
+            goto err;
+    }
+
     if (!BN_from_montgomery(rr, r, mont, ctx))
         goto err;
     ret = 1;
@@ -1129,6 +1242,7 @@ int BN_mod_exp_mont_consttime(BIGNUM *rr, const BIGNUM *a, const BIGNUM *p,
 int BN_mod_exp_mont_word(BIGNUM *rr, BN_ULONG a, const BIGNUM *p,
                          const BIGNUM *m, BN_CTX *ctx, BN_MONT_CTX *in_mont)
 {
+    // printf("exp_mont_word\n");
     BN_MONT_CTX *mont = NULL;
     int b, bits, ret = 0;
     int r_is_one;
