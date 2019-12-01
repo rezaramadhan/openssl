@@ -10,6 +10,7 @@
 #include "internal/cryptlib.h"
 #include "internal/constant_time.h"
 #include "bn_local.h"
+#include <math.h>
 
 #include <stdlib.h>
 #include "bn_par.h"
@@ -24,6 +25,10 @@
 # endif
 #elif defined(__sun)
 # include <alloca.h>
+#endif
+
+#ifndef min
+#define min(a,b)            (((a) < (b)) ? (a) : (b))
 #endif
 
 #include "rsaz_exp.h"
@@ -296,9 +301,10 @@ int BN_mod_exp_recp(BIGNUM *r, const BIGNUM *a, const BIGNUM *p,
 }
 
 int bn_mod_exp_mont_seq(BIGNUM *rr, const BIGNUM *a, const BIGNUM *p,
-                     const BIGNUM *m, BIGNUM **val, BN_CTX *ctx, BN_MONT_CTX *mont)
+                     const BIGNUM *m, BIGNUM **val, BN_CTX *ctx, BN_MONT_CTX *mont,
+                     int window)
 {
-    int i, j, bits, ret = 0, wstart, wend, window, wvalue, start;
+    int i, j, bits, ret = 0, wstart, wend, wvalue, start;
     BIGNUM *r;
 
 
@@ -318,8 +324,6 @@ int bn_mod_exp_mont_seq(BIGNUM *rr, const BIGNUM *a, const BIGNUM *p,
         ret = 1;
         return ret;
     }
-
-    window = BN_window_bits_for_exponent_size(bits);
 
     start = 1;                  /* This is used to avoid multiplication etc
                                  * when there is only the value '1' in the
@@ -412,6 +416,7 @@ void* bn_mod_exp_mont_thread(void *ptr) {
     const BIGNUM *m = args->m;
     BN_MONT_CTX *mont = args->mont_ctx;
     BN_ULONG ri = args->ri;
+    int window = args->window;
     BIGNUM **val = args->val;
     BN_CTX *ctx = BN_CTX_new();
 
@@ -423,7 +428,7 @@ void* bn_mod_exp_mont_thread(void *ptr) {
     // printf("ptb %s\n", BN_bn2hex(p));
 
     //exp
-    bn_mod_exp_mont_seq(r, a, p, m, val, ctx, mont);
+    bn_mod_exp_mont_seq(r, a, p, m, val, ctx, mont, window);
     // printf("rt %s\n", BN_bn2hex(r));
 
     BN_CTX_free(ctx);
@@ -431,16 +436,32 @@ void* bn_mod_exp_mont_thread(void *ptr) {
     pthread_exit(NULL);
 }
 
-void bn_slice(BIGNUM* to, const BIGNUM *from, int l_idx, int n) {
-    BN_ULONG* fp = from->d;
-    fp += l_idx;
+void bn_slice(BIGNUM* r, const BIGNUM *a, int ri, int next_ri) {
+    // shift right
+    BN_rshift(r, a, ri);
 
-    // print_arr(fbin, fl);
-    // printf("%lx\n", *fp);
+    //mask
+    BN_mask_bits(r, next_ri - ri);
+}
 
-    int nc_idx = n*(sizeof(BN_ULONG)/sizeof(unsigned char));
-    // printf("%d %d\n", l_idx, nc_idx);
-    BN_lebin2bn((unsigned char*)fp, nc_idx, to);
+int opt_num_of_thread(int n) {
+    float n_f = (float) n;
+    float lambda = 1.0 / 3.0;
+    float log_lamdba =  log(lambda);
+    float log_a = log(1.0 / (1 + 2*n_f*(1 - lambda)));
+    float gamma = log_a / log_lamdba;
+
+    return (int) round(gamma + 0.5);
+}
+
+int count_partition(int n, int par_num, int nthread) {
+    int k = nthread;
+    float lambda = 1.0 / 3.0;
+    float alpha = (float) n / (1.0 - pow(lambda, k));
+
+    float p = alpha*(1-pow(lambda, par_num));
+
+    return (int) p;
 }
 
 int BN_mod_exp_mont(BIGNUM *rr, const BIGNUM *a, const BIGNUM *p,
@@ -449,7 +470,7 @@ int BN_mod_exp_mont(BIGNUM *rr, const BIGNUM *a, const BIGNUM *p,
 
     // printf("exp_mont\n");
     pthread_t thr[NUM_THREADS];
-    int rc, n, i, j, window;
+    int rc, i, j, window;
     int bits, ret = 0;
     BIGNUM *d, *r;
     const BIGNUM *aa;
@@ -527,47 +548,47 @@ int BN_mod_exp_mont(BIGNUM *rr, const BIGNUM *a, const BIGNUM *p,
         }
     }
 
+    if (bits > 0) {
+        /* create a thread_data_t argument array */
+        exp_args thr_data[NUM_THREADS];
 
-    n = p->top;
-    /* create a thread_data_t argument array */
-    exp_args thr_data[NUM_THREADS];
+        /* create threads, divide array */
+        int nthread = min(NUM_THREADS, opt_num_of_thread(bits));
+        int next_ri = 0, ri = count_partition(bits, 0, nthread);
+        BIGNUM *rt, *pt;
+        for (int i = 0; i < nthread; ++i) {
+            if (i == (nthread - 1))
+                next_ri = bits;
+            else
+                next_ri = count_partition(bits, i+1, nthread);
 
-    /* create threads, divide array */
-    int new_n = n/NUM_THREADS;
-    int l_idx = 0;
-    int ni, ri;
-    BIGNUM *rt, *pt;
-    for (int i = 0; i < NUM_THREADS; ++i) {
-        l_idx = new_n * i;
-        // set ri
-        if (i == (NUM_THREADS - 1))
-            ni = new_n + n % NUM_THREADS;
-        else
-            ni = new_n;
-        ri = l_idx*sizeof(BN_ULONG)*8;
-        rt = BN_CTX_get(ctx);
-        pt = BN_CTX_get(ctx);
+            rt = BN_CTX_get(ctx);
+            pt = BN_CTX_get(ctx);
 
-        // split p to smaller
-        bn_slice(pt, p, l_idx, ni);
-        // printf("pi \n"); print_bn(thr_data[i].p);
+            // split p to smaller
+            bn_slice(pt, p, ri, next_ri);
+            // printf("pi \n"); print_bn(thr_data[i].p);
 
-        set_exp_arg(thr_data[i], rt, a, pt, m, mont, &(val[0]), ri);
+            set_exp_arg(thr_data[i], rt, a, pt, m, mont, &(val[0]), ri, window);
 
-        if ((rc = pthread_create(&thr[i], NULL, bn_mod_exp_mont_thread, &(thr_data[i])))) {
-          fprintf(stderr, "error: pthread_create, rc: %d\n", rc);
-          return EXIT_FAILURE;
+            if ((rc = pthread_create(&thr[i], NULL, bn_mod_exp_mont_thread, &(thr_data[i])))) {
+              fprintf(stderr, "error: pthread_create, rc: %d\n", rc);
+              return EXIT_FAILURE;
+            }
+            ri = next_ri;
         }
-    }
-    if (!bn_to_mont_fixed_top(r, BN_value_one(), mont, ctx))
-        goto err;
-    /* block until all threads complete */
-    for (int i = 0; i < NUM_THREADS; ++i) {
-        pthread_join(thr[i], NULL);
-
-        // printf("t%d %s\n", i, BN_bn2hex(thr_data[i].r));
-        if (!bn_mul_mont_fixed_top(r, r, thr_data[i].r, mont, ctx))
+        if (!bn_to_mont_fixed_top(r, BN_value_one(), mont, ctx))
             goto err;
+        /* block until all threads complete */
+        for (int i = 0; i < nthread; ++i) {
+            pthread_join(thr[i], NULL);
+
+            // printf("t%d %s\n", i, BN_bn2hex(thr_data[i].r));
+            if (!bn_mul_mont_fixed_top(r, r, thr_data[i].r, mont, ctx))
+                goto err;
+        }
+    } else {
+        bn_mod_exp_mont_seq(r, a, p, m, val, ctx, mont, window);
     }
 
     if (!BN_from_montgomery(rr, r, mont, ctx))
