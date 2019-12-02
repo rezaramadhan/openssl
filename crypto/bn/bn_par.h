@@ -1,7 +1,8 @@
 #define NUM_THREADS 2
 
-#define MIN_BN_RECURSIVE_SIZE_THREAD 64
-#define MIN_BITS_PARALLEL_EXP 2048
+#define MIN_BN_SIZE_MUL_RECURSIVE_PARALLEL 64
+#define MIN_BN_SIZE_MUL_NORMAL_PARALLEL 64
+#define MIN_BITS_EXP_PARALLEL 2048
 
 typedef struct _mul_normal_args_st {
     BN_ULONG *r;

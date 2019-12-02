@@ -344,7 +344,7 @@ void bn_mul_recursive(BN_ULONG *r, BN_ULONG *a, BN_ULONG *b, int n2,
     } else
 # endif                         /* BN_MUL_COMBA */
     {
-        if (n2 < MIN_BN_RECURSIVE_SIZE_THREAD)
+        if (n2 < MIN_BN_SIZE_MUL_RECURSIVE_PARALLEL)
             set_used_thread(used_thr, 99999);
 
         pthread_t thr[3];
@@ -499,7 +499,7 @@ void bn_mul_part_recursive(BN_ULONG *r, BN_ULONG *a, BN_ULONG *b, int n,
         bn_mul_normal(&(r[n2]), &(a[n]), tna, &(b[n]), tnb);
         memset(&r[n2 + tna + tnb], 0, sizeof(*r) * (n2 - tna - tnb));
     } else {
-        if (n2 < MIN_BN_RECURSIVE_SIZE_THREAD)
+        if (n2 < MIN_BN_SIZE_MUL_RECURSIVE_PARALLEL)
             set_used_thread(used_thr, 99999);
 
 

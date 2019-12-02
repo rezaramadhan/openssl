@@ -304,6 +304,7 @@ int bn_mod_exp_mont_seq(BIGNUM *rr, const BIGNUM *a, const BIGNUM *p,
                      const BIGNUM *m, BIGNUM **val, BN_CTX *ctx, BN_MONT_CTX *mont,
                      int window)
 {
+    BN_CTX_start(ctx);
     int i, j, bits, ret = 0, wstart, wend, wvalue, start;
     BIGNUM *r;
 
@@ -548,7 +549,7 @@ int BN_mod_exp_mont(BIGNUM *rr, const BIGNUM *a, const BIGNUM *p,
         }
     }
 
-    if (bits > 0) {
+    if (bits > MIN_BITS_EXP_PARALLEL) {
         /* create a thread_data_t argument array */
         exp_args thr_data[NUM_THREADS];
 
@@ -588,7 +589,7 @@ int BN_mod_exp_mont(BIGNUM *rr, const BIGNUM *a, const BIGNUM *p,
                 goto err;
         }
     } else {
-        bn_mod_exp_mont_seq(r, a, p, m, val, ctx, mont, window);
+        bn_mod_exp_mont_seq(r, a, p, m, &(val[0]), ctx, mont, window);
     }
 
     if (!BN_from_montgomery(rr, r, mont, ctx))
