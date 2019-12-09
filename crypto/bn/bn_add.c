@@ -153,49 +153,52 @@ int BN_uadd(BIGNUM *r, const BIGNUM *a, const BIGNUM *b)
     bp = b->d;
     rp = r->d;
 
-    // thread init
-    pthread_t thr[NUM_THREADS];
-    int rc;
+    if (min > MIN_BN_SIZE_ADD_PARALLEL) {
+        // thread init
+        pthread_t thr[NUM_THREADS];
+        int rc;
 
-    /* create a thread_data_t argument array */
-    add_sub_args thr_data[NUM_THREADS];
+        /* create a thread_data_t argument array */
+        add_sub_args thr_data[NUM_THREADS];
 
-    /* create threads, divide array */
-    int new_n = min/NUM_THREADS;
-    int l_idx = 0;
+        /* create threads, divide array */
+        int new_n = min/NUM_THREADS;
+        int l_idx = 0;
 
-    for (int i = 0; i < NUM_THREADS; ++i) {
-        l_idx = new_n * i;
-        // printf("l_idx %d, h_idx %d\n", l_idx, l_idx + new_n);
-        thr_data[i].a = &ap[l_idx];
-        thr_data[i].b = &bp[l_idx];
-        thr_data[i].r = &rp[l_idx];
-        thr_data[i].type = '+';
+        for (int i = 0; i < NUM_THREADS; ++i) {
+            l_idx = new_n * i;
+            // printf("l_idx %d, h_idx %d\n", l_idx, l_idx + new_n);
+            thr_data[i].a = &ap[l_idx];
+            thr_data[i].b = &bp[l_idx];
+            thr_data[i].r = &rp[l_idx];
+            thr_data[i].type = '+';
 
-        if (i == (NUM_THREADS - 1))
-            thr_data[i].n = new_n + min % NUM_THREADS;
-        else
-            thr_data[i].n = new_n;
+            if (i == (NUM_THREADS - 1))
+                thr_data[i].n = new_n + min % NUM_THREADS;
+            else
+                thr_data[i].n = new_n;
 
-        if ((rc = pthread_create(&thr[i], NULL, bn_add_sub_words_thread, &thr_data[i]))) {
-          fprintf(stderr, "error: pthread_create, rc: %d\n", rc);
-          return EXIT_FAILURE;
+            if ((rc = pthread_create(&thr[i], NULL, bn_add_sub_words_thread, &thr_data[i]))) {
+              fprintf(stderr, "error: pthread_create, rc: %d\n", rc);
+              return EXIT_FAILURE;
+            }
         }
-    }
-    /* block until all threads complete */
-    for (int i = 0; i < NUM_THREADS; ++i) {
-        pthread_join(thr[i], NULL);
-        // printf("t%d %d\n", i, thr_data[i].carry);
-    }
+        /* block until all threads complete */
+        for (int i = 0; i < NUM_THREADS; ++i) {
+            pthread_join(thr[i], NULL);
+            // printf("t%d %d\n", i, thr_data[i].carry);
+        }
 
-    /* Resolve Carry */
-    BN_ULONG tmp_carry;
-    for (int i = 0; i < NUM_THREADS - 1; ++i) {
-        tmp_carry = thr_data[i].carry;
-        bn_resolve_carry(tmp_carry, &thr_data[i+1]);
+        /* Resolve Carry */
+        BN_ULONG tmp_carry;
+        for (int i = 0; i < NUM_THREADS - 1; ++i) {
+            tmp_carry = thr_data[i].carry;
+            bn_resolve_carry(tmp_carry, &thr_data[i+1]);
+        }
+        carry = thr_data[NUM_THREADS-1].carry;
+    } else {
+        carry = bn_add_words(rp, ap, bp, min);
     }
-    carry = thr_data[NUM_THREADS-1].carry;
-
     rp += min;
     ap += min;
 
@@ -240,48 +243,52 @@ int BN_usub(BIGNUM *r, const BIGNUM *a, const BIGNUM *b)
     bp = b->d;
     rp = r->d;
 
-    // create threads
-    pthread_t thr[NUM_THREADS];
-    int rc;
+    if (min > MIN_BN_SIZE_ADD_PARALLEL) {
+        // create threads
+        pthread_t thr[NUM_THREADS];
+        int rc;
 
-    /* create a thread_data_t argument array */
-    add_sub_args thr_data[NUM_THREADS];
+        /* create a thread_data_t argument array */
+        add_sub_args thr_data[NUM_THREADS];
 
-    /* create threads, divide array */
-    int new_n = min/NUM_THREADS;
-    int l_idx = 0;
+        /* create threads, divide array */
+        int new_n = min/NUM_THREADS;
+        int l_idx = 0;
 
-    for (int i = 0; i < NUM_THREADS; ++i) {
-        l_idx = new_n * i;
-        // printf("l_idx %d, h_idx %d\n", l_idx, l_idx + new_n);
-        thr_data[i].a = &ap[l_idx];
-        thr_data[i].b = &bp[l_idx];
-        thr_data[i].r = &rp[l_idx];
-        thr_data[i].type = '-';
+        for (int i = 0; i < NUM_THREADS; ++i) {
+            l_idx = new_n * i;
+            // printf("l_idx %d, h_idx %d\n", l_idx, l_idx + new_n);
+            thr_data[i].a = &ap[l_idx];
+            thr_data[i].b = &bp[l_idx];
+            thr_data[i].r = &rp[l_idx];
+            thr_data[i].type = '-';
 
-        if (i == (NUM_THREADS - 1))
-            thr_data[i].n = new_n + min % NUM_THREADS;
-        else
-            thr_data[i].n = new_n;
+            if (i == (NUM_THREADS - 1))
+                thr_data[i].n = new_n + min % NUM_THREADS;
+            else
+                thr_data[i].n = new_n;
 
-        if ((rc = pthread_create(&thr[i], NULL, bn_add_sub_words_thread, &thr_data[i]))) {
-          fprintf(stderr, "error: pthread_create, rc: %d\n", rc);
-          return EXIT_FAILURE;
+            if ((rc = pthread_create(&thr[i], NULL, bn_add_sub_words_thread, &thr_data[i]))) {
+              fprintf(stderr, "error: pthread_create, rc: %d\n", rc);
+              return EXIT_FAILURE;
+            }
         }
-    }
-    /* block until all threads complete */
-    for (int i = 0; i < NUM_THREADS; ++i) {
-        pthread_join(thr[i], NULL);
-        // printf("t%d %d\n", i, thr_data[i].carry);
-    }
+        /* block until all threads complete */
+        for (int i = 0; i < NUM_THREADS; ++i) {
+            pthread_join(thr[i], NULL);
+            // printf("t%d %d\n", i, thr_data[i].carry);
+        }
 
-    /* Resolve Carry */
-    BN_ULONG tmp_carry;
-    for (int i = 0; i < NUM_THREADS - 1; ++i) {
-        tmp_carry = thr_data[i].carry;
-        bn_resolve_borrow(tmp_carry, &thr_data[i+1]);
+        /* Resolve Carry */
+        BN_ULONG tmp_carry;
+        for (int i = 0; i < NUM_THREADS - 1; ++i) {
+            tmp_carry = thr_data[i].carry;
+            bn_resolve_borrow(tmp_carry, &thr_data[i+1]);
+        }
+        borrow = thr_data[NUM_THREADS-1].carry;
+    } else {
+        borrow = bn_sub_words(rp, ap, bp, min);
     }
-    borrow = thr_data[NUM_THREADS-1].carry;
 
     ap += min;
     rp += min;
