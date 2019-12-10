@@ -544,11 +544,11 @@ void bn_mul_part_recursive(BN_ULONG *r, BN_ULONG *a, BN_ULONG *b, int n,
         } else if (j > 0) {     /* eg, n == 16, i == 8 and tn == 11 */
             if (get_used_thread(used_thr) < NUM_THREADS) {
                 tp[running_cnt] = (BN_ULONG *) calloc(n2*2, sizeof(BN_ULONG));
-                start_mul_recursive_thread(&(thr[running_cnt]), &(arg[running_cnt]), &(r[n2]), &(a[n]), &(b[n]),
+                start_mul_part_recursive_thread(&(thr[running_cnt]), &(arg[running_cnt]), &(r[n2]), &(a[n]), &(b[n]),
                                     i, tna - i, tnb - i, tp[running_cnt], used_thr);
                 running_cnt++;
             } else
-                bn_mul_recursive(&(r[n2]), &(a[n]), &(b[n]),
+                bn_mul_part_recursive(&(r[n2]), &(a[n]), &(b[n]),
                                     i, tna - i, tnb - i, p, used_thr);
             memset(&(r[n2 + tna + tnb]), 0,
                    sizeof(BN_ULONG) * (n2 - tna - tnb));
