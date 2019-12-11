@@ -229,7 +229,7 @@ void start_mul_part_recursive_thread(pthread_t *thr, recursive_args *arg, BN_ULO
 }
 
 int get_used_thread(int* used_thr) {
-    if (*used_thr > NUM_THREADS)
+    if (*used_thr >= NUM_THREADS)
         return *used_thr;
     else {
         pthread_mutex_lock(&thr_count_lock);
